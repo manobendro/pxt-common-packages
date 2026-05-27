@@ -15,13 +15,9 @@ static void initRandomSeed() {
 }
 
 void sendSerial(const char *data, int len) {
-    /*
-    if (!serial) {
-        serial = new codal::_mbed::Serial(USBTX, NC);
-        serial->baud(9600);
-    }
-    serial->send((uint8_t*)data, len);
-    */
+    // Host VM/linux runtime: write serial (console.log) to stdout.
+    fwrite(data, 1, len, stdout);
+    fflush(stdout);
 }
 
 extern "C" void drawPanic(int code)

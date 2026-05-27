@@ -2,14 +2,21 @@
 
 #include <stdlib.h>
 #include <stdio.h>
+#if defined(PXT_RP2040)
+#include "pico/time.h"
+#include "pico/stdlib.h"
+#include "hardware/watchdog.h"
+#include "hardware/sync.h"
+#else
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 #include <signal.h>
 #include <sys/types.h>
 #include <errno.h>
+#endif
 
-#ifndef PXT_ESP32
+#if !defined(PXT_ESP32) && !defined(PXT_RP2040)
 // __MINGW32__ is defined on both mingw32 and mingw64
 #ifdef __MINGW32__
 #include <windows.h>
@@ -58,7 +65,7 @@ uint8_t *gcBase;
 
 namespace pxt {
 
-#ifndef PXT_ESP32
+#if !defined(PXT_ESP32)
 static uint64_t startTime;
 #endif
 
@@ -141,6 +148,9 @@ void soft_panic(int errorCode) {
     ets_log_dmesg();
     sleep_core_us(4000000);
     abort();
+#elif defined(PXT_RP2040)
+    sleep_core_us(4000000);
+    systemReset();
 #else
     systemReset();
 #endif
@@ -151,6 +161,8 @@ void sleep_core_us(uint64_t us) {
     uint64_t endp = esp_timer_get_time() + us;
     while (esp_timer_get_time() < endp)
         ;
+#elif defined(PXT_RP2040)
+    busy_wait_us_64(us);
 #else
     struct timespec ts;
     ts.tv_sec = us / 1000000;
@@ -163,6 +175,8 @@ void sleep_core_us(uint64_t us) {
 void target_yield() {
 #ifdef PXT_ESP32
     vTaskDelay(1);
+#elif defined(PXT_RP2040)
+    sleep_core_us(1000);
 #else
     sleep_core_us(1000);
 #endif
@@ -182,11 +196,17 @@ void sleep_us(uint64_t us) {
 }
 
 #ifndef PXT_ESP32
+#ifdef PXT_RP2040
+static uint64_t currTime() {
+    return to_us_since_boot(get_absolute_time());
+}
+#else
 static uint64_t currTime() {
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return tv.tv_sec * 1000000LL + tv.tv_usec;
 }
+#endif
 
 uint64_t current_time_us() {
     if (!startTime)
@@ -525,6 +545,14 @@ void initRuntime() {
 void *gcAllocBlock(size_t sz) {
 #ifdef PXT_ESP32
     void *r = xmalloc(sz);
+#elif defined(PXT_RP2040)
+    static uint8_t gcArena[160 * 1024] __attribute__((aligned(GC_PAGE_SIZE)));
+    static size_t gcArenaPtr;
+    sz = (sz + GC_PAGE_SIZE - 1) & ~(GC_PAGE_SIZE - 1);
+    if (gcArenaPtr + sz > sizeof(gcArena))
+        soft_panic(PANIC_GC_OOM);
+    void *r = gcArena + gcArenaPtr;
+    gcArenaPtr += sz;
 #else
     static uint8_t *currPtr = (uint8_t *)GC_BASE;
     sz = (sz + GC_PAGE_SIZE - 1) & ~(GC_PAGE_SIZE - 1);
@@ -592,6 +620,11 @@ void registerResetFunction(reset_fn_t fn) {
 void systemReset() {
 #ifdef PXT_ESP32
     esp_restart();
+#elif defined(PXT_RP2040)
+    dmesg("TARGET RESET");
+    watchdog_reboot(0, 0, 0);
+    while (true)
+        tight_loop_contents();
 #else
     if (!panicCode)
         panicCode = -1;
